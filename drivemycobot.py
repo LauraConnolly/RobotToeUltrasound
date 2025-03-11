@@ -1,9 +1,20 @@
 # https://github.com/elephantrobotics/pymycobot
+# pip_install('pymycobot --upgrade')
 from pymycobot.mycobot280 import MyCobot280 as MyCobot
 import time
 
-mc = MyCobot('COM4',115200)
-mc.send_angles([0,0,0,0,0,0],20)
+mc = MyCobot('COM5',115200)
+
+#mc.send_angles([0,0,0,0,0,0],20)
+
+mc.send_coords([150, 0, 80, 175, 0, -45], 10, 1)
+mc.send_coords([210, 0, 80, 175, 0, -45], 10, 1)
+mc.send_coords([280, 0, 80, 175, 0, -45], 10, 1)
+
+# Good, side to side
+mc.send_coords([200, -60, 80, 175, 0, 45], 10, 1)
+mc.send_coords([200, 60, 80, 175, 0, 45], 10, 1)
+
 
 # for count in range(5):
 #   time.sleep(5)
