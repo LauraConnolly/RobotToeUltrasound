@@ -5,6 +5,20 @@ import time
 
 mc = MyCobot('COM5',115200)
 
+mc.send_angles([0,0,0,0,0,0],20)
+
+
+mc.send_angles([8.08, -28.12, -135.26, 76.11, 4.48, 61.17],5)
+mc.send_angles([52, -28.12, -135.26, 76.11, 4.48, 72],5)
+
+
+
+
+
+
+
+
+
 #mc.send_angles([0,0,0,0,0,0],20)
 
 mc.send_coords([150, 0, 80, 175, 0, -45], 10, 1)
@@ -41,8 +55,9 @@ def moveRobot():
 slicer.angleIndex = 0
 moveRobot()
 
+
 def updateProbeToRobotBaseTransform():
-    probeToRobotBaseTransform = slicer.mrmlScene.GetFirstNodeByName("LinearTransform")
+    probeToRobotBaseTransform = slicer.mrmlScene.GetFirstNodeByName("ProbeToRobotBase")
     if not probeToRobotBaseTransform:
         probeToRobotBaseTransform = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLTransformNode", "ProbeToRobotBase")
     angles = mc.get_angles()
@@ -54,12 +69,11 @@ def updateProbeToRobotBaseTransform():
     matrix.SetElement(0, 3, position[0])
     matrix.SetElement(1, 3, position[1])
     matrix.SetElement(2, 3, position[2])
-    print(matrix)
     probeToRobotBaseTransform.SetMatrixTransformToParent(matrix)
     probeToRobotBaseTransform.Modified()
     slicer.app.processEvents()
     if slicer.updateProbeToRobotBaseTransformActive:
-        qt.QTimer.singleShot(1000, updateProbeToRobotBaseTransform)
+        qt.QTimer.singleShot(100, updateProbeToRobotBaseTransform)
 
 
 slicer.updateProbeToRobotBaseTransformActive = True

@@ -1,7 +1,9 @@
+import copy
 import logging
 import os
 from typing import Annotated, Optional
 
+import qt
 import vtk
 
 import slicer
@@ -29,11 +31,10 @@ class RobotUltrasound(ScriptedLoadableModule):
 
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
-        self.parent.title = _("RobotUltrasound")  # TODO: make this more human readable by adding spaces
-        # TODO: set categories (folders where the module shows up in the module selector)
-        self.parent.categories = [translate("qSlicerAbstractCoreModule", "Examples")]
-        self.parent.dependencies = []  # TODO: add here list of module names that this module requires
-        self.parent.contributors = ["John Doe (AnyWare Corp.)"]  # TODO: replace with "Firstname Lastname (Organization)"
+        self.parent.title = _("Robot Ultrasound")
+        self.parent.categories = [translate("qSlicerAbstractCoreModule", "IGT")]
+        self.parent.dependencies = []
+        self.parent.contributors = ["Nora Lasso (Skeleton Crew)"]
         # TODO: update with short description of the module and a link to online module documentation
         # _() function marks text as translatable to other languages
         self.parent.helpText = _("""
@@ -45,59 +46,6 @@ See more information in <a href="https://github.com/organization/projectname#Rob
 This file was originally developed by Jean-Christophe Fillion-Robin, Kitware Inc., Andras Lasso, PerkLab,
 and Steve Pieper, Isomics, Inc. and was partially funded by NIH grant 3P41RR013218-12S1.
 """)
-
-        # Additional initialization step after application startup is complete
-        slicer.app.connect("startupCompleted()", registerSampleData)
-
-
-#
-# Register sample data sets in Sample Data module
-#
-
-
-def registerSampleData():
-    """Add data sets to Sample Data module."""
-    # It is always recommended to provide sample data for users to make it easy to try the module,
-    # but if no sample data is available then this method (and associated startupCompeted signal connection) can be removed.
-
-    import SampleData
-
-    iconsPath = os.path.join(os.path.dirname(__file__), "Resources/Icons")
-
-    # To ensure that the source code repository remains small (can be downloaded and installed quickly)
-    # it is recommended to store data sets that are larger than a few MB in a Github release.
-
-    # RobotUltrasound1
-    SampleData.SampleDataLogic.registerCustomSampleDataSource(
-        # Category and sample name displayed in Sample Data module
-        category="RobotUltrasound",
-        sampleName="RobotUltrasound1",
-        # Thumbnail should have size of approximately 260x280 pixels and stored in Resources/Icons folder.
-        # It can be created by Screen Capture module, "Capture all views" option enabled, "Number of images" set to "Single".
-        thumbnailFileName=os.path.join(iconsPath, "RobotUltrasound1.png"),
-        # Download URL and target file name
-        uris="https://github.com/Slicer/SlicerTestingData/releases/download/SHA256/998cb522173839c78657f4bc0ea907cea09fd04e44601f17c82ea27927937b95",
-        fileNames="RobotUltrasound1.nrrd",
-        # Checksum to ensure file integrity. Can be computed by this command:
-        #  import hashlib; print(hashlib.sha256(open(filename, "rb").read()).hexdigest())
-        checksums="SHA256:998cb522173839c78657f4bc0ea907cea09fd04e44601f17c82ea27927937b95",
-        # This node name will be used when the data set is loaded
-        nodeNames="RobotUltrasound1",
-    )
-
-    # RobotUltrasound2
-    SampleData.SampleDataLogic.registerCustomSampleDataSource(
-        # Category and sample name displayed in Sample Data module
-        category="RobotUltrasound",
-        sampleName="RobotUltrasound2",
-        thumbnailFileName=os.path.join(iconsPath, "RobotUltrasound2.png"),
-        # Download URL and target file name
-        uris="https://github.com/Slicer/SlicerTestingData/releases/download/SHA256/1a64f3f422eb3d1c9b093d1a18da354b13bcf307907c66317e2463ee530b7a97",
-        fileNames="RobotUltrasound2.nrrd",
-        checksums="SHA256:1a64f3f422eb3d1c9b093d1a18da354b13bcf307907c66317e2463ee530b7a97",
-        # This node name will be used when the data set is loaded
-        nodeNames="RobotUltrasound2",
-    )
 
 
 #
@@ -120,10 +68,12 @@ class RobotUltrasoundParameterNode:
     inputVolume: vtkMRMLScalarVolumeNode
     imageThreshold: Annotated[float, WithinRange(-100, 500)] = 100
     speed: Annotated[float, WithinRange(1, 50)] = 5
+    angleRange: Annotated[float, WithinRange(0, 90)] = 30
     invertThreshold: bool = False
     thresholdedVolume: vtkMRMLScalarVolumeNode
     invertedVolume: vtkMRMLScalarVolumeNode
-
+    centerAngles: list[float]
+    liveUpdates: bool = True
 
 #
 # RobotUltrasoundWidget
@@ -142,6 +92,7 @@ class RobotUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.logic = None
         self._parameterNode = None
         self._parameterNodeGuiTag = None
+        self._defaultCenterAngles = [0, -28, -135, 76, 5, 45]
 
     def setup(self) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
@@ -169,20 +120,40 @@ class RobotUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneEndClose)
 
         # Buttons
-        self.ui.applyButton.connect("clicked(bool)", self.onApplyButton)
         self.ui.connectButton.connect("clicked(bool)", self.onConnectButton)
         self.ui.disconnectButton.connect("clicked(bool)", self.onDisconnectButton)
-        self.ui.startButton.connect("clicked(bool)", self.onStartButton)
-        self.ui.endButton.connect("clicked(bool)", self.onEndButton)
+        self.ui.homeButton.connect("clicked(bool)", self.onHomeButton)
+        self.ui.stopButton.connect("clicked(bool)", self.onStopButton)
         self.ui.relaxButton.connect("clicked(bool)", self.onRelaxButton)
+
+        self.ui.setAsCenterButton.connect("clicked(bool)", self.onSetAsCenterButton)
+        self.ui.setCenterManuallyButton.connect("clicked(bool)", self.onSetCenterManuallyButton)
+        self.ui.resetCenterToDefaultButton.connect("clicked(bool)", self.onResetCenterToDefaultButton)
+        self.ui.startButton.connect("clicked(bool)", self.onStartButton)
+        self.ui.centerButton.connect("clicked(bool)", self.onCenterButton)
+        self.ui.endButton.connect("clicked(bool)", self.onEndButton)
         self.ui.flyButton.connect("clicked(bool)", self.onFlyButton)
+        self.ui.landButton.connect("clicked(bool)", self.onLandButton)
+
+        self.ui.resetVolumeReconstructionButton.connect("clicked(bool)", self.onResetVolumeReconstructionButton)
+        self.ui.startVolumeReconstructionButton.connect("clicked(bool)", self.onStartVolumeReconstructionButton)
+        self.ui.stopVolumeReconstructionButton.connect("clicked(bool)", self.onStopVolumeReconstructionButton)
 
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
 
+        slicer.updateProbeHolderToRobotBaseTransformActive = False
+
+        if not self._parameterNode.centerAngles:
+            self._parameterNode.centerAngles = copy.copy(self._defaultCenterAngles)
+
+        if hasattr(slicer, 'mc') and slicer.mc:
+            self.onConnectButton()
+
     def cleanup(self) -> None:
         """Called when the application closes and the module widget is destroyed."""
         self.removeObservers()
+        slicer.updateProbeHolderToRobotBaseTransformActive = False
 
     def enter(self) -> None:
         """Called each time the user opens this module."""
@@ -195,7 +166,7 @@ class RobotUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if self._parameterNode:
             self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
             self._parameterNodeGuiTag = None
-            self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
+            self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._parameterNodeModified)
 
     def onSceneStartClose(self, caller, event) -> None:
         """Called just before the scene is closed."""
@@ -229,62 +200,259 @@ class RobotUltrasoundWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         if self._parameterNode:
             self._parameterNode.disconnectGui(self._parameterNodeGuiTag)
-            self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
+            self.removeObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._parameterNodeModified)
         self._parameterNode = inputParameterNode
         if self._parameterNode:
             # Note: in the .ui file, a Qt dynamic property called "SlicerParameterName" is set on each
             # ui element that needs connection.
             self._parameterNodeGuiTag = self._parameterNode.connectGui(self.ui)
-            self.addObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._checkCanApply)
-            self._checkCanApply()
+            self.addObserver(self._parameterNode, vtk.vtkCommand.ModifiedEvent, self._parameterNodeModified)
+            self._parameterNodeModified()
 
-    def _checkCanApply(self, caller=None, event=None) -> None:
-        if self._parameterNode and self._parameterNode.inputVolume and self._parameterNode.thresholdedVolume:
-            self.ui.applyButton.toolTip = _("Compute output volume")
-            self.ui.applyButton.enabled = True
-        else:
-            self.ui.applyButton.toolTip = _("Select input and output volume nodes")
-            self.ui.applyButton.enabled = False
-
-    def onApplyButton(self) -> None:
-        """Run processing when user clicks "Apply" button."""
-        with slicer.util.tryWithErrorDisplay(_("Failed to compute results."), waitCursor=True):
-            # Compute output
-            self.logic.process(self.ui.inputSelector.currentNode(), self.ui.outputSelector.currentNode(),
-                               self.ui.imageThresholdSliderWidget.value, self.ui.invertOutputCheckBox.checked)
-
-            # Compute inverted output (if needed)
-            if self.ui.invertedOutputSelector.currentNode():
-                # If additional output volume is selected then result with inverted threshold is written there
-                self.logic.process(self.ui.inputSelector.currentNode(), self.ui.invertedOutputSelector.currentNode(),
-                                   self.ui.imageThresholdSliderWidget.value, not self.ui.invertOutputCheckBox.checked, showResult=False)
-
+    def _parameterNodeModified(self, caller=None, event=None) -> None:
+        pass
 
     def onConnectButton(self) -> None:
-        from pymycobot.mycobot280 import MyCobot280 as MyCobot
-        slicer.mc = MyCobot('COM5',115200)
+        self.ui.connectionStatusLabel.text = "<font color='yellow'>Status: Connecting...</font>"
+        self.ui.connectionStatusLabel.toolTip = ""
+        slicer.app.processEvents()
+        try:
+            from pymycobot.mycobot280 import MyCobot280 as MyCobot
+            if not hasattr(slicer, 'mc') or not slicer.mc:
+                slicer.mc = MyCobot('COM5',115200)
+            version = slicer.mc.get_system_version()
+            # green text
+            self.ui.connectionStatusLabel.text = "<font color='green'>Status: Connected.</font>"
+            self.ui.connectionStatusLabel.toolTip = f"System version: {version}"
+
+            # Start robot position updates
+            slicer.updateProbeHolderToRobotBaseTransformActive = True
+            self.updateProbeHolderToRobotBaseTransform()
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.ui.connectionStatusLabel.text = f"<font color='red'>Status: Connection failed.</font>"
+            self.ui.connectionStatusLabel.toolTip = str(e)
+            slicer.mc = None
 
     def onDisconnectButton(self) -> None:
-        slicer.mc.close()
+        if hasattr(slicer, 'mc') and slicer.mc:
+            slicer.mc.close()
+        slicer.mc = None
+        slicer.updateProbeHolderToRobotBaseTransformActive = False
+        self.ui.connectionStatusLabel.text = "<font color='gray'>Status: Disconnected.</font>"
+        self.ui.connectionStatusLabel.toolTip = ""
 
-    def onStartButton(self):
-        slicer.mc.send_angles([8.08, -28.12, -135.26, 76.11, 4.48, 61.17],int(self.ui.speedSlider.value))
+    def onHomeButton(self):
+        slicer.mc.send_angles([0, 0, 0, 0, 0, 0],15)
 
-    def onEndButton(self):
-        slicer.mc.send_angles([52, -28.12, -135.26, 76.11, 4.48, 72],int(self.ui.speedSlider.value))
+    def onStopButton(self):
+        slicer.mc.stop()
+
+    def onSetAsCenterButton(self):
+        self._parameterNode.centerAngles = copy.copy(slicer.mc.get_angles())
+
+    def onResetCenterToDefaultButton(self):
+        self._parameterNode.centerAngles = copy.copy(self._defaultCenterAngles)
+        self.onCenterButton()
+
+    def _moveByAngle(self, angle, waitToArrive=False, speed=None):
+        angles = copy.copy(list(self._parameterNode.centerAngles))
+        angles[0] = angles[0] + angle
+        angles[5] = angles[5] + angle
+        if speed is None:
+            speed = int(self.ui.speedSlider.value)
+        if waitToArrive:
+            slicer.mc.sync_send_angles(angles, speed)
+        else:
+            slicer.mc.send_angles(angles, speed)
+
+    def onStartButton(self, waitToArrive=False, speed=None):
+        self._moveByAngle(-self.ui.angleRangeSlider.value / 2, waitToArrive, speed)
+
+    def onCenterButton(self, waitToArrive=False, speed=None):
+        self._moveByAngle(0, waitToArrive, speed)
+
+    def onEndButton(self, waitToArrive=False, speed=None):
+        self._moveByAngle(self.ui.angleRangeSlider.value / 2, waitToArrive, speed)
 
     def onRelaxButton(self):
+        # wait 3 seconds, to give time the user to get hold of the robot
+        slicer.util.delayDisplay("Relax the arm in 3 seconds...", 3000)
         slicer.mc.release_all_servos()
+
+    def onSetCenterManuallyButton(self):
+        # wait 3 seconds, to give time the user to get hold of the robot
+        slicer.util.delayDisplay("Relax the arm in 3 seconds...", 3000)
+        slicer.mc.release_all_servos()
+        slicer.util.delayDisplay("Position the arm for 5 seconds...", 5000)
+        slicer.mc.focus_all_servos()
+        slicer.util.delayDisplay("Arm position is locked", 2000)
 
     def onFlyButton(self):
         angles = slicer.mc.get_angles()
         coords = slicer.mc.angles_to_coords(angles)
-        coords[2] = coords[2] + 20
-        slicer.mc.send_coords(coords, 10, 1)
+        coords[2] = coords[2] + 5
+        slicer.mc.send_coords(coords, 10, 0)
 
-        #angles = slicer.mc.coords_to_angles(coords)
-        #slicer.mc.send_angles(angles,5)
+    def onLandButton(self):
+        angles = slicer.mc.get_angles()
+        coords = slicer.mc.angles_to_coords(angles)
+        coords[2] = coords[2] - 5
+        slicer.mc.send_coords(coords, 10, 0)
 
+    def updateProbeHolderToRobotBaseTransform(self):
+        if not hasattr(slicer, 'mc') or not slicer.mc or not slicer.mc.is_controller_connected():
+            if slicer.updateProbeHolderToRobotBaseTransformActive:
+                qt.QTimer.singleShot(1000, updateProbeHolderToRobotBaseTransform)
+        probeHolderToRobotBaseTransform = slicer.mrmlScene.GetFirstNodeByName("ProbeHolderToRobotBase")
+        if not probeHolderToRobotBaseTransform:
+            probeHolderToRobotBaseTransform = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLTransformNode", "ProbeHolderToRobotBase")
+        angles = slicer.mc.get_angles()
+        position = slicer.mc.angles_to_coords(angles)
+        #transform = vtk.vtkTransform()
+        #transform.Translate(position[0], position[1], position[2])
+        #probeHolderToRobotBaseTransform.SetMatrixTransformToParent(transform.GetMatrix())
+        matrix = vtk.vtkMatrix4x4()
+        matrix.SetElement(0, 3, position[0])
+        matrix.SetElement(1, 3, position[1])
+        matrix.SetElement(2, 3, position[2])
+        probeHolderToRobotBaseTransform.SetMatrixTransformToParent(matrix)
+        probeHolderToRobotBaseTransform.Modified()
+        slicer.app.processEvents()
+        if slicer.updateProbeHolderToRobotBaseTransformActive:
+            qt.QTimer.singleShot(0, self.updateProbeHolderToRobotBaseTransform)
+
+    def onResetVolumeReconstructionButton(self):
+
+        connectorNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLIGTLConnectorNode")
+        if connectorNode:
+            connectorNode.Stop()
+        else:
+            connectorNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLIGTLConnectorNode")
+            connectorNode.SetName("RobotUltrasoundConnector")
+        connectorNode.SetTypeClient("localhost", 18944)
+        connectorNode.Start()
+
+        # Wait for the ultrasound image to be received
+        import time
+        for i in range(30):
+            usImageNode = slicer.mrmlScene.GetFirstNodeByName("Image_Reference")
+            if usImageNode:
+                break
+            slicer.app.processEvents()
+            time.sleep(0.1)
+
+        if not usImageNode:
+            slicer.util.errorDisplay("Failed to receive ultrasound image")
+            return
+
+        liveUpdates = self._parameterNode.liveUpdates
+
+        layoutManager = slicer.app.layoutManager()
+        sliceWidget = layoutManager.sliceWidget("Red")
+
+        sliceNode = sliceWidget.mrmlSliceNode()
+        sliceLogic = sliceWidget.sliceLogic()
+
+        if liveUpdates:
+            sliceLogic.GetSliceCompositeNode().SetBackgroundVolumeID(usImageNode.GetID())
+            sliceWidget.sliceController().setSliceVisible(True)
+            sliceLogic.FitSliceToBackground()
+        else:
+            #sliceLogic.GetSliceCompositeNode().SetBackgroundVolumeID(None)
+            slicer.util.setSliceViewerLayers(background=None)
+            sliceWidget.sliceController().setSliceVisible(False)
+
+        # Set up volume reslice driver.
+        resliceLogic = slicer.modules.volumereslicedriver.logic()
+        if resliceLogic:
+            # Typically the image is zoomed in, therefore it is faster if the original resolution is used
+            # on the 3D slice (and also we can show the full image and not the shape and size of the 2D view)
+            sliceNode.SetSliceResolutionMode(slicer.vtkMRMLSliceNode.SliceResolutionMatchVolumes)
+            resliceLogic.SetDriverForSlice(usImageNode.GetID(), sliceNode)
+            resliceLogic.SetModeForSlice(6, sliceNode)  # Transverse mode, default for PLUS ultrasound.
+            resliceLogic.SetFlipForSlice(True, sliceNode)
+            resliceLogic.SetRotationForSlice(180, sliceNode)
+            sliceLogic.FitSliceToAll()
+        else:
+            logging.warning('Logic not found for Volume Reslice Driver')
+
+        imageToProbeHolderTransform = slicer.mrmlScene.GetFirstNodeByName("ImageToProbeHolder")
+        if not imageToProbeHolderTransform:
+            imageToProbeHolderTransform = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLinearTransformNode", "ImageToProbeHolder")
+        imageToProbeHolder = vtk.vtkTransform()
+        imageToProbeHolder.RotateX(90)
+        imageToProbeHolder.Scale(0.64, 0.64, 0.64)
+        imageToProbeHolderTransform.SetMatrixTransformToParent(imageToProbeHolder.GetMatrix())
+
+        probeHolderToRobotBaseTransform = slicer.mrmlScene.GetFirstNodeByName("ProbeHolderToRobotBase")
+        if not probeHolderToRobotBaseTransform:
+            slicer.util.errorDisplay("Robot position is not found. Connect to the robot first.")
+            return
+        
+        usImageNode.SetAndObserveTransformNodeID(imageToProbeHolderTransform.GetID())
+        imageToProbeHolderTransform.SetAndObserveTransformNodeID(probeHolderToRobotBaseTransform.GetID())
+
+        # Set up volume reconstruction
+        volumeReconstructionNode = slicer.mrmlScene.GetFirstNodeByName("VolumeReconstruction")
+        if not volumeReconstructionNode:
+            volumeReconstructionNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLVolumeReconstructionNode", "VolumeReconstruction")
+        volumeReconstructionNode.SetLiveVolumeReconstruction(False)
+        roiNode = slicer.mrmlScene.GetFirstNodeByName("VolumeReconstructionROI")
+        if not roiNode:
+            roiNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsROINode", "VolumeReconstructionROI")
+            roiNode.CreateDefaultDisplayNodes()
+            roiNode.SetDisplayVisibility(False)
+        outputVolumeNode = slicer.mrmlScene.GetFirstNodeByName("Volume_Reference")
+        if not outputVolumeNode:
+            outputVolumeNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode", "Volume_Reference")
+            outputVolumeNode.CreateDefaultDisplayNodes()
+
+        volumeReconstructionNode.SetLiveVolumeReconstruction(True)
+        volumeReconstructionNode.SetAndObserveInputVolumeNode(slicer.mrmlScene.GetFirstNodeByName("Image_Reference"))
+        volumeReconstructionNode.SetAndObserveOutputVolumeNode(outputVolumeNode)
+        volumeReconstructionNode.SetAndObserveInputROINode(roiNode)
+        volumeReconstructionNode.SetFillHoles(True)
+        volumeReconstructionNode.SetLiveUpdateIntervalSeconds(1 if liveUpdates else 1000)
+
+        spacing = 1.0 if liveUpdates else 0.5
+        volumeReconstructionNode.SetOutputSpacing(spacing, spacing, spacing)
+
+        self.onStartButton(waitToArrive=True, speed=15)
+        centerPosition = slicer.mc.angles_to_coords([0,0,0,0,0,0])
+
+        roiSize = [80, 120, 60]
+        roiOffset = [50, 50, 40]
+        roiNode.SetXYZ(centerPosition[0] + roiOffset[0], centerPosition[1] + roiOffset[1], centerPosition[2] + roiOffset[2])
+        roiNode.SetRadiusXYZ(roiSize[0]/2, roiSize[1]/2, roiSize[2]/2)
+
+        slicer.modules.volumereconstruction.logic().ResetVolumeReconstruction(volumeReconstructionNode)
+
+        volumeRenderingLogic = slicer.modules.volumerendering.logic()
+        vrDisplayNode = volumeRenderingLogic.CreateDefaultVolumeRenderingNodes(outputVolumeNode)
+        vrDisplayNode.SetVisibility(liveUpdates)
+        vrDisplayNode.GetVolumePropertyNode().Copy(volumeRenderingLogic.GetPresetByName("MR-Default"))
+
+        slicer.modules.volumereconstruction.logic().StartLiveVolumeReconstruction(volumeReconstructionNode)
+  
+    def onStartVolumeReconstructionButton(self):
+        self.onEndButton()
+        
+    def onStopVolumeReconstructionButton(self):
+        volumeReconstructionNode = slicer.mrmlScene.GetFirstNodeByName("VolumeReconstruction")
+        slicer.modules.volumereconstruction.logic().StopLiveVolumeReconstruction(volumeReconstructionNode)
+        liveUpdates = self._parameterNode.liveUpdates
+        if not liveUpdates:
+            outputVolumeNode = slicer.mrmlScene.GetFirstNodeByName("Volume_Reference")
+            volumeRenderingLogic = slicer.modules.volumerendering.logic()
+            vrDisplayNode = volumeRenderingLogic.GetFirstVolumeRenderingDisplayNode(outputVolumeNode)
+            if vrDisplayNode:
+                vrDisplayNode.SetVisibility(True)
+
+
+        
 #
 # RobotUltrasoundLogic
 #
@@ -307,43 +475,6 @@ class RobotUltrasoundLogic(ScriptedLoadableModuleLogic):
     def getParameterNode(self):
         return RobotUltrasoundParameterNode(super().getParameterNode())
 
-    def process(self,
-                inputVolume: vtkMRMLScalarVolumeNode,
-                outputVolume: vtkMRMLScalarVolumeNode,
-                imageThreshold: float,
-                invert: bool = False,
-                showResult: bool = True) -> None:
-        """
-        Run the processing algorithm.
-        Can be used without GUI widget.
-        :param inputVolume: volume to be thresholded
-        :param outputVolume: thresholding result
-        :param imageThreshold: values above/below this threshold will be set to 0
-        :param invert: if True then values above the threshold will be set to 0, otherwise values below are set to 0
-        :param showResult: show output volume in slice viewers
-        """
-
-        if not inputVolume or not outputVolume:
-            raise ValueError("Input or output volume is invalid")
-
-        import time
-
-        startTime = time.time()
-        logging.info("Processing started")
-
-        # Compute the thresholded output volume using the "Threshold Scalar Volume" CLI module
-        cliParams = {
-            "InputVolume": inputVolume.GetID(),
-            "OutputVolume": outputVolume.GetID(),
-            "ThresholdValue": imageThreshold,
-            "ThresholdType": "Above" if invert else "Below",
-        }
-        cliNode = slicer.cli.run(slicer.modules.thresholdscalarvolume, None, cliParams, wait_for_completion=True, update_display=showResult)
-        # We don't need the CLI module node anymore, remove it to not clutter the scene with it
-        slicer.mrmlScene.RemoveNode(cliNode)
-
-        stopTime = time.time()
-        logging.info(f"Processing completed in {stopTime-startTime:.2f} seconds")
 
 
 #
@@ -380,36 +511,5 @@ class RobotUltrasoundTest(ScriptedLoadableModuleTest):
         """
 
         self.delayDisplay("Starting the test")
-
-        # Get/create input data
-
-        import SampleData
-
-        registerSampleData()
-        inputVolume = SampleData.downloadSample("RobotUltrasound1")
-        self.delayDisplay("Loaded test data set")
-
-        inputScalarRange = inputVolume.GetImageData().GetScalarRange()
-        self.assertEqual(inputScalarRange[0], 0)
-        self.assertEqual(inputScalarRange[1], 695)
-
-        outputVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode")
-        threshold = 100
-
-        # Test the module logic
-
-        logic = RobotUltrasoundLogic()
-
-        # Test algorithm with non-inverted threshold
-        logic.process(inputVolume, outputVolume, threshold, True)
-        outputScalarRange = outputVolume.GetImageData().GetScalarRange()
-        self.assertEqual(outputScalarRange[0], inputScalarRange[0])
-        self.assertEqual(outputScalarRange[1], threshold)
-
-        # Test algorithm with inverted threshold
-        logic.process(inputVolume, outputVolume, threshold, False)
-        outputScalarRange = outputVolume.GetImageData().GetScalarRange()
-        self.assertEqual(outputScalarRange[0], inputScalarRange[0])
-        self.assertEqual(outputScalarRange[1], inputScalarRange[1])
 
         self.delayDisplay("Test passed")
